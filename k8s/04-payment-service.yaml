@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: fulfillx
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: payment-service }
+  template:
+    metadata:
+      labels: { app: payment-service }
+    spec:
+      containers:
+        - name: payment-service
+          image: fulfillx/payment-service:latest
+          ports: [{ containerPort: 8082 }]
+          envFrom:
+            - configMapRef: { name: fulfillx-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: fulfillx-db-credentials, key: DATABASE_URL_PAYMENT } }
+            - name: KAFKA_CONSUMER_GROUP
+              value: "payment-service"
+            - name: PORT
+              value: "8082"
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8082 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8082 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: fulfillx
+spec:
+  selector: { app: payment-service }
+  ports: [{ port: 8082, targetPort: 8082 }]

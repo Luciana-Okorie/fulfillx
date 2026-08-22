@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go vet ./...
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1.3.1
+        with:
+          version: "2024.1"
+
+  unit-tests:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go test ./... -short -race -cover
+
+  integration-tests:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fulfillx
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: run migrations
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          psql "postgres://postgres:postgres@localhost:5432/fulfillx" -f migrations/0001_init.sql
+      - name: integration tests
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/fulfillx?sslmode=disable
+          REDIS_ADDR: localhost:6379
+        run: go test ./... -run Integration -tags=integration
+
+  build-image:
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build (no push on PRs)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: fulfillx/order-service:${{ github.sha }}
+
+  security-scan:
+    needs: build-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # Deploy is intentionally left as a manual/environment-gated stub —
+  # wire this to your actual cluster credentials before enabling.
+  deploy:
+    needs: security-scan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "deploy step placeholder - wire kubectl/helm here"
